@@ -1,3 +1,5 @@
+// cargo +stable-i686-pc-windows-msvc run
+
 use std::ffi::c_void;
 
 use windows::{
@@ -18,6 +20,76 @@ static mut MESSAGE_BOX_ORIGINAL_BYTES: [u8; 6] = [0; 6];
 static mut BYTES_WRITTEN: usize = 0;
 static mut MESSAGE_BOX_ADDRESS: Option<unsafe extern "system" fn() -> isize> = None;
 
+fn main() {
+    unsafe {
+        // Show messagebox before hooking
+        //
+        // Pop the message box before the function is hooked - just to make sure it works and to
+        // prove that no functions are hooked so far -  it's the first instruction of the program
+        MessageBoxA(HWND(0), s!("Hello World"), s!("Rust"), Default::default());
+
+        let dll_handle = LoadLibraryA(s!("user32.dll")).unwrap();
+        let bytes_read: usize = 0;
+
+        // Get address of the `MessageBox` function in memory
+        //
+        // If we disassemble the bytes at that address, we will definitely see that there is code for
+        // `MessageBoxA`
+        MESSAGE_BOX_ADDRESS = GetProcAddress(dll_handle, s!("MessageBoxA"));
+
+        // save the first 6 bytes of the original MessageBoxA function - will need for unhooking
+        //
+        // Note the first 6 bytes <xx xx xx xx xx xx>(mind the endian-ness, where `xx` is some hex address).
+        // We need to save these bytes for future when we want to unhook MessageBoxA
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            MESSAGE_BOX_ADDRESS.unwrap() as *const c_void,
+            MESSAGE_BOX_ORIGINAL_BYTES.as_ptr() as *mut c_void,
+            6,
+            Some(bytes_read as *mut usize),
+        );
+
+        // Create a patch `push <address of new MessageBoxA); ret`
+        //
+        // Let's now build the patch (hook) bytes:
+        let hooked_message_box_address = (HookedMessageBox as *mut ()).cast::<c_void>();
+        let offset = hooked_message_box_address as isize;
+        let mut patch = [0; 6];
+        patch[0] = 0x68;
+        let temp = offset.to_ne_bytes();
+        patch[1..5].copy_from_slice(&temp[..4]);
+        patch[5] = 0xC3;
+        // ...that will translate into the following assembly instructions:
+        //
+        // ```asm
+        // // push HookedMessageBox memory address onto the stack
+        // push HookedMessageBox
+        // // jump to HookedMessageBox
+        // ret
+        // ```
+
+        // Patch the `MessageBoxA`
+        //
+        // We can now patch the `MessageBoxA` - memory pane in the bottom right shows the patch being
+        // written to the beginning of `MessageBoxA` function and the top right shows the beginning of
+        // the same function is re-written with a `push <address that jumps to our hooked function>;
+        // ret` instructions
+        WriteProcessMemory(
+            GetCurrentProcess(),
+            MESSAGE_BOX_ADDRESS.unwrap() as *const c_void,
+            patch.as_ptr().cast::<c_void>(),
+            6,
+            Some(BYTES_WRITTEN as *mut usize),
+        );
+
+        // show messagebox after hooking
+        MessageBoxA(HWND(0), s!("Hello World"), s!("Rust"), Default::default());
+    }
+}
+
+// The `HookedMessageBox` intercepts and prints out the arguments supplied to `MessageBoxA`, then
+// unhooks `MessageBoxA` by swapping back the first 6 bytes to the original bytes of the `MessageBoxA`
+// function and then calls the `MessageBoxA` with the supplied arguments:
 #[no_mangle]
 pub extern "stdcall" fn HookedMessageBox(
     hwnd: HWND,
@@ -57,151 +129,3 @@ pub extern "stdcall" fn HookedMessageBox(
         MessageBoxA(hwnd, lptext, lpcaption, utype)
     }
 }
-
-fn main() {
-    unsafe {
-        // Show messagebox before hooking
-        MessageBoxA(HWND(0), s!("Hello World"), s!("Rust"), Default::default());
-
-        let dll_handle = LoadLibraryA(s!("user32.dll")).unwrap();
-        let bytes_read: usize = 0;
-
-        // Get address of the MessageBox function in memory
-        MESSAGE_BOX_ADDRESS = GetProcAddress(dll_handle, s!("MessageBoxA"));
-
-        // save the first 6 bytes of the original MessageBoxA function - will need for unhooking
-        ReadProcessMemory(
-            GetCurrentProcess(),
-            MESSAGE_BOX_ADDRESS.unwrap() as *const c_void,
-            MESSAGE_BOX_ORIGINAL_BYTES.as_ptr() as *mut c_void,
-            6,
-            Some(bytes_read as *mut usize),
-        );
-
-        // Create a patch "push <address of new MessageBoxA); ret"
-        let hooked_message_box_address = (HookedMessageBox as *mut ()).cast::<c_void>();
-        let offset = hooked_message_box_address as isize;
-
-        let mut patch = [0; 6];
-        patch[0] = 0x68;
-
-        let temp = offset.to_ne_bytes();
-
-        patch[1..5].copy_from_slice(&temp[..4]);
-        patch[5] = 0xC3;
-
-        // Patch the MessageBoxA
-        WriteProcessMemory(
-            GetCurrentProcess(),
-            MESSAGE_BOX_ADDRESS.unwrap() as *const c_void,
-            patch.as_ptr().cast::<c_void>(),
-            6,
-            Some(BYTES_WRITTEN as *mut usize),
-        );
-
-        // show messagebox after hooking
-        MessageBoxA(HWND(0), s!("Hello World"), s!("Rust"), Default::default());
-    }
-}
-
-// cargo +stable-i686-pc-windows-msvc run
-
-/*
-use std::ffi::c_void;
-
-use windows::core::PCSTR;
-use windows::s;
-use windows::Win32::{
-    Foundation::{HANDLE, HWND},
-    System::{
-        Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory},
-        LibraryLoader::{GetProcAddress, LoadLibraryA},
-        Threading::GetCurrentProcess,
-    },
-    UI::WindowsAndMessaging::{MessageBoxA, MESSAGEBOX_STYLE},
-};
-
-#[no_mangle]
-pub fn HookedMessageBox(hwnd: isize, lptext: *const u8, lpcaption: *const u8, utype: u32) -> i32 {
-    unsafe {
-        WriteProcessMemory(
-            GetCurrentProcess(),
-            MESSAGE_BOX_ADDRESS.unwrap() as *const c_void,
-            MESSAGE_BOX_ORIGINAL_BYTES.as_ptr().cast::<c_void>(),
-            5,
-            None,
-        );
-
-        println!(
-            "lptext: {}\nlpcation: {}",
-            PCSTR(lptext).to_string().unwrap(),
-            PCSTR(lpcaption).to_string().unwrap(),
-        );
-
-        std::thread::sleep(std::time::Duration::from_secs(3));
-
-        MessageBoxA(
-            HWND(hwnd),
-            PCSTR(lptext),
-            PCSTR(lpcaption),
-            MESSAGEBOX_STYLE(utype),
-        )
-        .0
-    }
-}
-
-static mut MESSAGE_BOX_ORIGINAL_BYTES: [u8; 5] = [0; 5];
-static mut MESSAGE_BOX_ADDRESS: Option<unsafe extern "system" fn() -> isize> = None;
-
-fn main() {
-    unsafe {
-        let dll_handle = LoadLibraryA(s!("user32.dll")).unwrap();
-        MESSAGE_BOX_ADDRESS = GetProcAddress(dll_handle, s!("MessageBoxA"));
-
-        MESSAGE_BOX_ORIGINAL_BYTES = [0; 5];
-
-        ReadProcessMemory(
-            GetCurrentProcess(),
-            MESSAGE_BOX_ADDRESS.unwrap() as *const c_void,
-            MESSAGE_BOX_ORIGINAL_BYTES.as_ptr() as *mut c_void,
-            5,
-            None,
-        );
-
-        let hooked_func_address = (HookedMessageBox as *mut ()).cast::<c_void>();
-
-        let offset = hooked_func_address as isize - (MESSAGE_BOX_ADDRESS.unwrap() as isize + 5);
-
-        let mut patch = [0; 5];
-        patch[0] = 0xe9;
-
-        let temp = offset.to_ne_bytes();
-
-        /*
-        for i in 1..patch.len() {
-            patch[i] = temp[i - 1];
-        }
-        */
-        patch[1..].copy_from_slice(&temp[..4]);
-
-        WriteProcessMemory(
-            GetCurrentProcess(),
-            MESSAGE_BOX_ADDRESS.unwrap() as *const c_void,
-            patch.as_ptr().cast::<c_void>(),
-            5,
-            None,
-        );
-
-        let runner = std::mem::transmute::<*mut c_void, fn(isize, *const u8, *const u8, u32) -> i32>(
-            MESSAGE_BOX_ADDRESS.unwrap() as *mut c_void,
-        );
-
-        runner(
-            0,
-            "Hello World\0".as_ptr().cast::<u8>(),
-            "Hello World\0".as_ptr().cast::<u8>(),
-            0,
-        );
-    }
-}
-*/
