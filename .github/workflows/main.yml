@@ -1,0 +1,20 @@
+on: [ push, pull_request ]
+
+name: i686-pc-windows-msvc build
+
+jobs:
+  i686-pc-windows-msvc:
+    name: i686-pc-windows-msvc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: i686-pc-windows-msvc
+          override: true
+      - uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --target i686-pc-windows-msvc
