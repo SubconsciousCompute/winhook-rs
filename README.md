@@ -2,6 +2,9 @@
 
 [![i686-pc-windows-msvc build](https://github.com/SubconsciousCompute/winhook-rs/actions/workflows/main.yml/badge.svg?branch=master)](https://github.com/SubconsciousCompute/winhook-rs/actions/workflows/main.yml)
 
+Also
+checkout [fsfilter-rs:  A rust library to monitor filesystem 🪛 and more in windows using filesystem driver](https://github.com/SubconsciousCompute/fsfilter-rs)
+
 > Windows API hooking is one of the techniques used by AV/EDR solutions to determine if code is malicious.
 > A `MessageBoxA` function will be hooked in this instance, but it could be any.
 >
